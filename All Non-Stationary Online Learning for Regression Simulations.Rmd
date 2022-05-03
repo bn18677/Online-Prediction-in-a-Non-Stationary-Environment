@@ -1,0 +1,374 @@
+---
+title: "all sim"
+output:
+  word_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library("MASS",character.only=TRUE)
+library("ggplot2")
+set.seed(10)
+```
+
+First we define the needed parameters for the synthetic data.
+
+```{r}
+beta<-c(1,3,2,4,5,3,1,3,2,1)
+rho<-c(0.995,0.985,0.99,0.995,0.98,1,0.98,0.99,0.995,0.994)
+a<-0
+for (i in 1:1){
+  a<-a+rho[i]^2
+}
+a^(1/2)
+
+sigma<-0.5
+
+```
+
+Now we define a function that ensure that the synthetic data is non-stationary.
+
+```{r}
+betaupd<-function(rho,beta,sigma){
+  u<-rnorm(1,mean=0,sd=sigma)
+  newbeta<-(rho*beta) + u
+  return(newbeta)
+}
+```
+
+We now create the synthetic data.
+
+```{r}
+num<-100000
+d<-length(beta)
+x<-mvrnorm(num,rep(1,d),diag(d))
+ysim<-function(num,beta,x){
+  dim<-length(beta)
+  eps<-rnorm(n=num, mean=0, sd=1)
+  y<-eps
+  for (j in 1:num){
+    for (i in 1:dim){
+      y[j]<-y[j]+beta[i]*x[j,i]
+    }
+    beta<-betaupd(rho,beta,sigma)
+  }
+  return(y)
+}
+y<-ysim(num,beta,x)
+x<-cbind(x,matrix(rep(1,num),ncol=1))
+x2<-cbind(x,matrix(c(0,head(y,-1)),ncol=1))
+```
+
+We now define the ARCOR and AROWR algorithms following the descriptions as defined in the main paper.
+
+```{r}
+alphast<-function(u,alpha,lamda,Rb){
+  n<-length(alpha)
+  store<-numeric(n)
+  for (i in 1:n){
+    store[i]<-sum((u^2)/((1+alpha[i]*lamda)^2))
+  }
+  return(store)
+}
+
+proj<-function(wt,covv,Rb,dim){
+  decomp<-eigen(covv)
+  V<-decomp$vectors
+  Lamd<-decomp$values
+  u<-t(V)%*%wt
+  if (norm(wt,type="2")<=Rb){
+    return(wt)
+  }
+  else{
+    lamdmin<-min(Lamd)
+    a<-((norm(u,type="2"))/(Rb-1))/lamdmin
+    alpha<-seq(0,a,a/1000)
+    alpha<-alpha[binary_search(alphast(u,alpha,Lamd,Rb),0,TRUE)]
+    return(solve((diag(dim))+alpha*covv)%*%wt)
+  }
+  return(w)
+}
+
+ARCOR<-function(x,y,r,Rb,ll){
+  dim<-length(x[1,])
+  num<-length(x[,1])
+  I<-diag(dim)
+  tcov<-ll*I
+  w<-t(matrix(0,1,dim))
+  covv<-diag(dim)
+  ey<-c()
+  for (i in 1:num){
+    denom<-r+t(x[i,])%*%covv%*%x[i,]
+    numer<-t(x[i,])%*%w
+    ey[i]<-numer
+    wnum<-(y[i]-numer)
+    wtilde<-w+(wnum/denom)[1,1]*covv%*%x[i,]
+    covvtilde<-solve(solve(covv)+(x[i,]%*%t(x[i,])))
+    if (min((as.vector(covv)-as.vector(tcov)))>=0){
+      covv<-covvtilde
+    }
+    else {
+      covv<-I
+      tcov<-(ll*(4/5))*I
+    }
+    w<-proj(wtilde,covv,Rb,dim)
+  }
+  return(ey)
+}
+
+AROWR<-function(x,y,r){
+  dim<-length(x[1,])
+  num<-length(x[,1])
+  w<-t(matrix(0,1,dim))
+  covv<-diag(dim)
+  ey<-c()
+  for (i in 1:num){
+    ey[i]<-t(x[i,])%*%w
+    wnum<-(y[i]-ey[i])
+    wden<-r+t(x[i,])%*%covv%*%x[i,]
+    w<-w+(wnum/wden)[1,1]*covv%*%x[i,]
+    covv<-solve(solve(covv)+(1/r)*(x[i,]%*%t(x[i,])))
+  }
+  return(ey)
+}
+```
+
+We now define the LASER and AAR algorithms following the description as defined in the main paper.
+
+```{r}
+LASER<-function(x,y,b,c){
+  dim<-length(x[1,])
+  num<-length(x[,1])
+  w<-t(matrix(0,1,dim))
+  I<-diag(dim)
+  covv<-I*((c-b)/(b*c))
+  ey<-c()
+  for (i in 1:num){
+    denom<-1+t(x[i,])%*%(covv+((1/c)*I))%*%x[i,]
+    numer<-t(x[i,])%*%w
+    ey[i]<-numer/denom
+    wnum<-(y[i]-numer)
+    w<-w+(wnum/denom)[1,1]*(covv+((1/c)*I))%*%x[i,]
+    covv<-solve(solve((covv+((1/c)*I)))+(x[i,]%*%t(x[i,])))
+  }
+  return(ey)
+}
+
+AAR<-function(x,y,b){
+  dim<-length(x[1,])
+  num<-length(x[,1])
+  w<-t(matrix(0,1,dim))
+  covv<-diag(dim)*(1/b)
+  ey<-c()
+  for (i in 1:num){
+    denom<-1+t(x[i,])%*%covv%*%x[i,]
+    numer<-t(x[i,])%*%w
+    ey[i]<-numer/denom
+    wnum<-(y[i]-numer)
+    w<-w+(wnum/denom)[1,1]*covv%*%x[i,]
+    covv<-solve(solve(covv)+(x[i,]%*%t(x[i,])))
+  }
+  return(ey)
+}
+```
+
+We now define the CR-RLS and RLS algorithms following the description as defined in the main paper.
+
+```{r}
+CRRLS<-function(x,y,r,t0){
+  dim<-length(x[1,])
+  num<-length(x[,1])
+  w<-t(matrix(0,1,dim))
+  covv<-diag(dim)
+  ey<-c()
+  for (i in 1:num){
+    ey[i]<-t(x[i,])%*%w
+    wnum<-(y[i]-ey[i])
+    wden<-r+t(x[i,])%*%covv%*%x[i,]
+    w<-w+(wnum/wden)[1,1]*covv%*%x[i,]
+    covv<-solve(r*solve(covv)+(x[i,]%*%t(x[i,])))
+    if (i%%t0==0){
+      covv<-diag(dim)
+    }
+  }
+  return(ey)
+}
+
+RLS<-function(x,y,r){
+  dim<-length(x[1,])
+  num<-length(x[,1])
+  w<-t(matrix(0,1,dim))
+  covv<-diag(dim)
+  ey<-c()
+  for (i in 1:num){
+    ey[i]<-t(x[i,])%*%w
+    wnum<-(y[i]-ey[i])
+    wden<-r+t(x[i,])%*%covv%*%x[i,]
+    w<-w+(wnum/wden)[1,1]*covv%*%x[i,]
+    covv<-solve(r*solve(covv)+(x[i,]%*%t(x[i,])))
+  }
+  return(ey)
+}
+```
+
+We now build a function that will calculate the cumulative squared loss
+
+```{r}
+cumsqloss<-function(y,yh,burn){
+  Tt<-length(y)
+  return(sum((y[(burn+1):Tt]-yh[(burn+1):Tt])^2))
+}
+
+cumsqloss2<-function(y,yh){
+  Tt<-length(y)
+  tot<-0
+  store<-numeric(Tt)
+  for (i in (1):Tt){
+    tot<-tot+(yh[i]-y[i])^2
+    store[i]<-tot
+  }
+  return(store)
+}
+```
+
+We now use the first 5000 points in the training data and test different parameters for LASER on this training data to help us guess what the optimum parameters will be by seing which has the smallest cumulative error.
+
+```{r}
+cumsqloss(y[500:5000],LASER(x,y,1,1000)[500:5000],0)
+cumsqloss(y[500:5000],LASER(x,y,1,2000)[500:5000],0)
+cumsqloss(y[500:5000],LASER(x,y,1,3000)[500:5000],0)
+cumsqloss(y[500:5000],LASER(x,y,1,3500)[500:5000],0)
+cumsqloss(y[500:5000],LASER(x,y,1,3750)[500:5000],0)
+cumsqloss(y[500:5000],LASER(x,y,1,4000)[500:5000],0)
+cumsqloss(y[500:5000],LASER(x,y,1,4250)[500:5000],0)
+cumsqloss(y[500:5000],LASER(x,y,1,4500)[500:5000],0)
+cumsqloss(y[500:5000],LASER(x,y,1,5000)[500:5000],0)
+cumsqloss(y[500:5000],LASER(x,y,1,6000)[500:5000],0)
+```
+
+We now run LASER and AAR on the full data set and analyse them accordingly.
+
+```{r}
+b<-1
+c<-3750
+b2<-(b*c)/(c-b)
+
+yhatLASER<-LASER(x,y,b,c)[5001:num]
+yhatAAR<-AAR(x,y,b2)[5001:num]
+
+ytest<-y[5001:num]
+
+cumsqloss(ytest,yhatLASER,0)/(num-5000)
+cumsqloss(ytest,yhatAAR,0)/(num-5000)
+
+plot((1:(num-5000)),(ytest-yhatAAR))
+plot((1:(num-5000)),(ytest-yhatLASER))
+
+cumAAR<-cumsqloss2(ytest,yhatAAR)
+cumLASER<-cumsqloss2(ytest,yhatLASER)
+plot((1:(num-5000)),cumAAR,type="l",col="red")
+lines((1:(num-5000)),cumLASER,col="green")
+```
+
+We now use the first 5000 points in the training data and test different parameters for ARCOR and AROWR on this training data to help us guess what the optimum parameters will be by seeing which has the smallest cumulative error.
+
+```{r}
+cumsqloss(y[500:5000],ARCOR(x,y,1,10000,0.95)[500:5000],0)
+cumsqloss(y[500:5000],ARCOR(x,y,2,10000,0.95)[500:5000],0)
+cumsqloss(y[500:5000],ARCOR(x,y,3,10000,0.95)[500:5000],0)
+cumsqloss(y[500:5000],ARCOR(x,y,4,10000,0.95)[500:5000],0)
+cumsqloss(y[500:5000],ARCOR(x,y,5,10000,0.95)[500:5000],0)
+cumsqloss(y[500:5000],ARCOR(x,y,6,10000,0.95)[500:5000],0)
+cumsqloss(y[500:5000],ARCOR(x,y,100,10000,0.95)[500:5000],0)
+```
+
+```{r}
+cumsqloss(y[500:5000],AROWR(x,y,0.1)[500:5000],0)
+cumsqloss(y[500:5000],AROWR(x,y,1)[500:5000],0)
+cumsqloss(y[500:5000],AROWR(x,y,2)[500:5000],0)
+cumsqloss(y[500:5000],AROWR(x,y,3)[500:5000],0)
+cumsqloss(y[500:5000],AROWR(x,y,4)[500:5000],0)
+cumsqloss(y[500:5000],AROWR(x,y,5)[500:5000],0)
+cumsqloss(y[500:5000],AROWR(x,y,6)[500:5000],0)
+cumsqloss(y[500:5000],AROWR(x,y,7)[500:5000],0)
+cumsqloss(y[500:5000],AROWR(x,y,8)[500:5000],0)
+cumsqloss(y[500:5000],AROWR(x,y,9)[500:5000],0)
+cumsqloss(y[500:5000],AROWR(x,y,10)[500:5000],0)
+```
+
+We now run ARCOR and AROWR on the full data set and analyse them accordingly.
+
+```{r}
+yhatARCOR<-ARCOR(x,y,3,100,0.95)[5001:num]
+yhatAROWR<-AROWR(x,y,1)[5001:num]
+
+ytest<-y[5001:num]
+
+cumsqloss(ytest,yhatARCOR,0)/(num-5000)
+cumsqloss(ytest,yhatAROWR,0)/(num-5000)
+
+plot((1:(num-5000)),(ytest-yhatAROWR))
+plot((1:(num-5000)),(ytest-yhatARCOR))
+
+cumAROWR<-cumsqloss2(ytest,yhatAROWR)
+cumARCOR<-cumsqloss2(ytest,yhatARCOR)
+plot((1:(num-5000)),cumAROWR,type="l",col="red")
+lines((1:(num-5000)),cumARCOR,col="green")
+```
+
+We now use the first 5000 points in the training data and test different parameters for CR-RLS on this training data to help us guess what the optimum parameters will be by seing which has the smallest cumulative error.
+
+```{r}
+cumsqloss(y[500:5000],CRRLS(x,y,0.9,1)[500:5000],0)
+cumsqloss(y[500:5000],CRRLS(x,y,0.9,2)[500:5000],0)
+cumsqloss(y[500:5000],CRRLS(x,y,0.9,3)[500:5000],0)
+cumsqloss(y[500:5000],CRRLS(x,y,0.9,4)[500:5000],0)
+cumsqloss(y[500:5000],CRRLS(x,y,0.9,5)[500:5000],0)
+cumsqloss(y[500:5000],CRRLS(x,y,0.9,10)[500:5000],0)
+cumsqloss(y[500:5000],CRRLS(x,y,0.9,15)[500:5000],0)
+cumsqloss(y[500:5000],CRRLS(x,y,0.9,20)[500:5000],0)
+cumsqloss(y[500:5000],CRRLS(x,y,0.9,25)[500:5000],0)
+cumsqloss(y[500:5000],CRRLS(x,y,0.9,30)[500:5000],0)
+cumsqloss(y[500:5000],CRRLS(x,y,0.9,35)[500:5000],0)
+cumsqloss(y[500:5000],CRRLS(x,y,0.9,40)[500:5000],0)
+cumsqloss(y[500:5000],CRRLS(x,y,0.9,45)[500:5000],0)
+cumsqloss(y[500:5000],CRRLS(x,y,0.9,50)[500:5000],0)
+cumsqloss(y[500:5000],CRRLS(x,y,0.9,5000)[500:5000],0)
+```
+
+We now run CR-RLS and RLS on the full data set and analyse them accordingly.
+
+```{r}
+yhatCRRLS<-CRRLS(x,y,0.8,1)[5001:num]
+yhatRLS<-RLS(x,y,0.8)[5001:num]
+
+ytest<-y[5001:num]
+
+cumsqloss(ytest,yhatCRRLS,0)/(num-5000)
+cumsqloss(ytest,yhatRLS,0)/(num-5000)
+
+plot((1:(num-5000)),(ytest-yhatRLS))
+plot((1:(num-5000)),(ytest-yhatCRRLS))
+
+cumRLS<-cumsqloss2(ytest,yhatRLS)
+cumCRRLS<-cumsqloss2(ytest,yhatCRRLS)
+plot((1:(num-5000)),cumRLS,type="l",col="red")
+lines((1:(num-5000)),cumCRRLS,col="green")
+```
+
+We now plot all cumulative squared errors on one glass for easy comparison
+
+```{r}
+plot((1:(num-5000)),cumRLS,type="l",col="red",main="Synthetic Data",ylab="Cumulative Squared-Error",xlab="Number of iterations")
+lines((1:(num-5000)),cumCRRLS,col="orange")
+lines((1:(num-5000)),cumARCOR,col="purple")
+lines((1:(num-5000)),cumAROWR,col="blue")
+lines((1:(num-5000)),cumAAR,col="darkgreen")
+lines((1:(num-5000)),cumLASER,col="green")
+legend(0, 5.6*(10^6), legend=c("RLS", "CR-RLS","ARCOR", "AROWR","AAR", "LASER"),
+       col=c("red", "orange","purple", "blue","darkgreen", "green"), lty=1:2, cex=0.8)
+```
+
+
+
