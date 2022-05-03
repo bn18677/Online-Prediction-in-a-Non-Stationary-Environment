@@ -1,0 +1,175 @@
+---
+title: "all sim"
+output:
+  word_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library("MASS",character.only=TRUE)
+library("ggplot2")
+set.seed(10)
+```
+
+First we define the needed parameters for the synthetic data. Note that each vector has only two elements.
+
+```{r}
+beta<-c(1,3,2,4,5,3,1,3,2,1)
+rho<-c(0.98,0.95,0.97,0.99,0.95,1,0.98,0.99,0.95,0.96)
+a<-0
+for (i in 1:1){
+  a<-a+rho[i]^2
+}
+a^(1/2)
+
+sigma<-1
+nd<-length(beta)
+```
+
+Now we define a function that ensure that the synthetic data is non-stationary.
+
+```{r}
+betaupd<-function(rho,beta,sigma){
+  u<-rnorm(nd,mean=0,sd=sigma)
+  newbeta<-(rho*beta) + u
+  return(newbeta)
+}
+
+betaupd2<-function(c,t){
+  newbeta2<-beta*sin(c*t)
+  return(newbeta2)
+}
+```
+
+We now create the synthetic data.
+
+```{r}
+num<-100000
+d<-length(beta)
+x<-mvrnorm(num,rep(1,d),diag(d))
+ysim<-function(num,beta,x){
+  dim<-length(beta)
+  eps<-rnorm(n=num, mean=0, sd=1)
+  y<-eps
+  for (j in 1:num){
+    for (i in 1:dim){
+      y[j]<-y[j]+beta[i]*x[j,i]
+    }
+    beta<-betaupd(rho,beta,sigma)
+  }
+  return(y)
+}
+y<-ysim(num,beta,x)
+x2<-x
+x<-cbind(x,matrix(rep(1,num),ncol=1))
+```
+
+Here we code and run the Covariance Method.
+
+```{r}
+
+###########################
+# My version
+###########################
+siginffunc<-function(M, tt){
+    M2<-diag(M)
+    tot<-0
+    for (i in 1:(tt-1)){
+      xi<-x2[i,]
+      tot<-tot+((y[i]^2)-(t(xi)%*%M2%*%xi)-(sigeps^2))^2
+    }
+    return(tot)
+  }
+  
+  
+Mfunc<-function(M, tt){
+    M2<-diag(M)
+    tot<-0
+    for (i in 1:(tt-1)){
+      xi<-x2[i,]
+      tot<-tot+((y[i]*y[i+1])-(t(x2[i,])%*%M2%*%x2[(i+1),]))^2
+    }
+    return(tot)
+}
+ahtfind<-function(t_val,M0, sigma,x,y){
+   M<-diag(optim(M0,Mfunc, tt=t_val,   control=list(maxit=1000000))$par)
+   
+ 
+   siginfhat<-diag(optim(M0,siginffunc,tt=t_val, control=list(maxit=1000000))$par)
+   return(M%*%solve(siginfhat))
+}
+
+sigeps=sigma
+M0<-rep(1,nd)
+
+ahat<-ahtfind(100000,M0, sigma,x2,y)
+ahat
+```
+ 
+Here we code the kalman filter which will allow us to make predictions with our estimate ahat found using CM.
+
+```{r}
+
+kalmanfilt<-function(A,Q,R,x,y){
+  mu<-matrix(rep(0,nd),nrow=nd,ncol=1)
+  tt<-length(y)
+  lpmu<-mu
+  store<-numeric(tt)
+  cov<-Q
+  for(i in 1:(tt-1)){
+    H<-matrix(x[i,],nrow=1)
+    pmu<-A%*%mu              #ok x_{k|k-1}
+    store[i]<-H%*%pmu
+    pcov<-(A%*%cov%*%t(A))+Q #P_{t+1|t}
+    K<-(pcov%*%t(H))%*%(solve(H%*%pcov%*%t(H)+R))
+    mu<-pmu+K*c(y[i]-H%*%pmu) 
+    cov<-pcov- K%*%H%*%pcov
+  }
+  return(store)
+}
+
+A0<-diag(rho)
+
+yhatkal<-kalmanfilt(A=ahat, Q=diag(rep(sigma,nd)), R=sigma,x2,y)
+ 
+```
+
+We now build a function that will calculate the cumulative squared loss.
+
+```{r}
+cumsqloss<-function(y,yh,burn){
+  Tt<-length(y)
+  return(sum((y[(burn+1):Tt]-yh[(burn+1):Tt])^2))
+}
+
+cumsqloss2<-function(y,yh){
+  Tt<-length(y)
+  tot<-0
+  store<-numeric(Tt)
+  for (i in (1):Tt){
+    tot<-tot+(yh[i]-y[i])^2
+    store[i]<-tot
+  }
+  return(store)
+}
+```
+
+We now run the Kalman filter with our estimate ahat found using the CM on the full data set and analyse them accordingly.
+
+```{r}
+yhatkal2<-yhatkal[10001:num]
+
+ytest<-y[10001:num]
+
+cumsqloss(ytest,yhatkal2,0)/(num-10000)
+
+plot((1:(num-10000)),(ytest-yhatkal2))
+
+cumkal<-cumsqloss2(ytest,yhatkal2)
+
+plot((1:(num-10000)),cumkal,type="l",col="red")
+```
+
+
+

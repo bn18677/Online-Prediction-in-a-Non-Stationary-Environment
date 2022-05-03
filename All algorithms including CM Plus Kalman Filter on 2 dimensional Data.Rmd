@@ -1,0 +1,452 @@
+---
+title: "all sim"
+output:
+  word_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library("MASS",character.only=TRUE)
+library("ggplot2")
+set.seed(10)
+```
+
+First we define the needed parameters for the synthetic data. Note that each vector has only two elements.
+
+```{r}
+beta<-c(1,2)
+rho<-c(0.98,0.95)
+a<-0
+for (i in 1:1){
+  a<-a+rho[i]^2
+}
+a^(1/2)
+
+sigma<-1
+nd<-length(beta)
+```
+
+Now we define a function that ensure that the synthetic data is non-stationary.
+
+```{r}
+betaupd<-function(rho,beta,sigma){
+  u<-rnorm(2,mean=0,sd=sigma)
+  newbeta<-(rho*beta) + u
+  return(newbeta)
+}
+
+```
+
+We now create the synthetic data.
+
+```{r}
+num<-100000
+d<-length(beta)
+x<-mvrnorm(num,rep(1,d),diag(d))
+ysim<-function(num,beta,x){
+  dim<-length(beta)
+  eps<-rnorm(n=num, mean=0, sd=1)
+  y<-eps
+  for (j in 1:num){
+    for (i in 1:dim){
+      y[j]<-y[j]+beta[i]*x[j,i]
+    }
+    beta<-betaupd(rho,beta,sigma)
+  }
+  return(y)
+}
+y<-ysim(num,beta,x)
+x2<-x
+x<-cbind(x,matrix(rep(1,num),ncol=1))
+```
+
+Here we code and run the Covariance Method.
+
+```{r}
+
+###########################
+# My version
+###########################
+siginffunc<-function(M, tt){
+    M2<-matrix(M,nrow=2,ncol=2)
+    tot<-0
+    for (i in 1:(tt-1)){
+      xi<-x2[i,]
+      tot<-tot+((y[i]^2)-(t(xi)%*%M2%*%xi)-(sigeps^2))^2
+    }
+    return(tot)
+  }
+  
+  
+Mfunc<-function(M, tt){
+    M2<-matrix(M,nrow=2,ncol=2)
+    tot<-0
+    for (i in 1:(tt-1)){
+      xi<-x2[i,]
+      tot<-tot+((y[i]*y[i+1])-(t(x2[i,])%*%M2%*%x2[(i+1),]))^2
+    }
+    return(tot)
+}
+ahtfind<-function(t_val,M0, sigma,x,y){
+   M<-matrix(optim(t(c(M0)),Mfunc, tt=t_val,   control=list(maxit=100000))$par,nrow=2,ncol=2)
+   
+ 
+   siginfhat<-matrix(optim(t(c(M)),siginffunc,tt=t_val, control=list(maxit=100000))$par,nrow=2,ncol=2)
+   return(M%*%solve(siginfhat))
+}
+
+sigeps=sigma
+M0<-matrix(diag(2),2,2)
+
+ahat<-ahtfind(10000,M0, sigma,x2,y)
+ahat
+
+ 
+
+```
+ 
+Here we code the kalman filter which will allow us to make predictions with our estimate ahat found using CM.
+
+```{r}
+
+kalmanfilt<-function(A,Q,R,x,y){
+  mu<-matrix(rep(0,2),nrow=2,ncol=1)
+  tt<-length(y)
+  lpmu<-mu
+  store<-numeric(tt)
+  cov<-Q
+  for(i in 1:(tt-1)){
+    H<-matrix(x[i,],nrow=1)
+    pmu<-A%*%mu              #ok x_{k|k-1}
+    store[i]<-H%*%pmu
+    pcov<-(A%*%cov%*%t(A))+Q #P_{t+1|t}
+    K<-(pcov%*%t(H))%*%(solve(H%*%pcov%*%t(H)+R))
+    mu<-pmu+K*c(y[i]-H%*%pmu) 
+    cov<-pcov- K%*%H%*%pcov
+  }
+  return(store)
+}
+
+A0<-diag(rho)
+
+yhatkal<-kalmanfilt(A=ahat, Q=diag(rep(sigma,2)), R=sigma,x2,y)
+ 
+```
+
+We now build a function that will calculate the cumulative squared loss.
+
+```{r}
+cumsqloss<-function(y,yh,burn){
+  Tt<-length(y)
+  return(sum((y[(burn+1):Tt]-yh[(burn+1):Tt])^2))
+}
+
+cumsqloss2<-function(y,yh){
+  Tt<-length(y)
+  tot<-0
+  store<-numeric(Tt)
+  for (i in (1):Tt){
+    tot<-tot+(yh[i]-y[i])^2
+    store[i]<-tot
+  }
+  return(store)
+}
+```
+
+We now run the Kalman filter with our estimate ahat found using the CM on the full data set and analyse them accordingly.
+
+```{r}
+yhatkal2<-yhatkal[10001:num]
+
+ytest<-y[10001:num]
+
+cumsqloss(ytest,yhatkal2,0)/(num-10000)
+
+plot((1:(num-10000)),(ytest-yhatkal2))
+
+cumkal<-cumsqloss2(ytest,yhatkal2)
+
+plot((1:(num-10000)),cumkal,type="l",col="red")
+```
+
+We now code all the other algorithms previously discussed so we can compare.
+
+```{r}
+alphast<-function(u,alpha,lamda,Rb){
+  n<-length(alpha)
+  store<-numeric(n)
+  for (i in 1:n){
+    store[i]<-sum((u^2)/((1+alpha[i]*lamda)^2))
+  }
+  return(store)
+}
+
+proj<-function(wt,covv,Rb,dim){
+  decomp<-eigen(covv)
+  V<-decomp$vectors
+  Lamd<-decomp$values
+  u<-t(V)%*%wt
+  if (norm(wt,type="2")<=Rb){
+    return(wt)
+  }
+  else{
+    lamdmin<-min(Lamd)
+    a<-((norm(u,type="2"))/(Rb-1))/lamdmin
+    alpha<-seq(0,a,a/1000)
+    alpha<-alpha[binary_search(alphast(u,alpha,Lamd,Rb),0,TRUE)]
+    return(solve((diag(dim))+alpha*covv)%*%wt)
+  }
+  return(w)
+}
+
+ARCOR<-function(x,y,r,Rb,ll){
+  dim<-length(x[1,])
+  num<-length(x[,1])
+  I<-diag(dim)
+  tcov<-ll*I
+  w<-t(matrix(0,1,dim))
+  covv<-diag(dim)
+  ey<-c()
+  for (i in 1:num){
+    denom<-r+t(x[i,])%*%covv%*%x[i,]
+    numer<-t(x[i,])%*%w
+    ey[i]<-numer
+    wnum<-(y[i]-numer)
+    wtilde<-w+(wnum/denom)[1,1]*covv%*%x[i,]
+    covvtilde<-solve(solve(covv)+(x[i,]%*%t(x[i,])))
+    if (min((as.vector(covv)-as.vector(tcov)))>=0){
+      covv<-covvtilde
+    }
+    else {
+      covv<-I
+      tcov<-(ll*(4/5))*I
+    }
+    w<-proj(wtilde,covv,Rb,dim)
+  }
+  return(ey)
+}
+
+AROWR<-function(x,y,r){
+  dim<-length(x[1,])
+  num<-length(x[,1])
+  w<-t(matrix(0,1,dim))
+  covv<-diag(dim)
+  ey<-c()
+  for (i in 1:num){
+    ey[i]<-t(x[i,])%*%w
+    wnum<-(y[i]-ey[i])
+    wden<-r+t(x[i,])%*%covv%*%x[i,]
+    w<-w+(wnum/wden)[1,1]*covv%*%x[i,]
+    covv<-solve(solve(covv)+(1/r)*(x[i,]%*%t(x[i,])))
+  }
+  return(ey)
+}
+```
+
+
+```{r}
+LASER<-function(x,y,b,c){
+  dim<-length(x[1,])
+  num<-length(x[,1])
+  w<-t(matrix(0,1,dim))
+  I<-diag(dim)
+  covv<-I*((c-b)/(b*c))
+  ey<-c()
+  for (i in 1:num){
+    denom<-1+t(x[i,])%*%(covv+((1/c)*I))%*%x[i,]
+    numer<-t(x[i,])%*%w
+    ey[i]<-numer/denom
+    wnum<-(y[i]-numer)
+    w<-w+(wnum/denom)[1,1]*(covv+((1/c)*I))%*%x[i,]
+    covv<-solve(solve((covv+((1/c)*I)))+(x[i,]%*%t(x[i,])))
+  }
+  return(ey)
+}
+
+AAR<-function(x,y,b){
+  dim<-length(x[1,])
+  num<-length(x[,1])
+  w<-t(matrix(0,1,dim))
+  covv<-diag(dim)*(1/b)
+  ey<-c()
+  for (i in 1:num){
+    denom<-1+t(x[i,])%*%covv%*%x[i,]
+    numer<-t(x[i,])%*%w
+    ey[i]<-numer/denom
+    wnum<-(y[i]-numer)
+    w<-w+(wnum/denom)[1,1]*covv%*%x[i,]
+    covv<-solve(solve(covv)+(x[i,]%*%t(x[i,])))
+  }
+  return(ey)
+}
+```
+
+
+```{r}
+CRRLS<-function(x,y,r,t0){
+  dim<-length(x[1,])
+  num<-length(x[,1])
+  w<-t(matrix(0,1,dim))
+  covv<-diag(dim)
+  ey<-c()
+  for (i in 1:num){
+    ey[i]<-t(x[i,])%*%w
+    wnum<-(y[i]-ey[i])
+    wden<-r+t(x[i,])%*%covv%*%x[i,]
+    w<-w+(wnum/wden)[1,1]*covv%*%x[i,]
+    covv<-solve(r*solve(covv)+(x[i,]%*%t(x[i,])))
+    if (i%%t0==0){
+      covv<-diag(dim)
+    }
+  }
+  return(ey)
+}
+
+RLS<-function(x,y,r){
+  dim<-length(x[1,])
+  num<-length(x[,1])
+  w<-t(matrix(0,1,dim))
+  covv<-diag(dim)
+  ey<-c()
+  for (i in 1:num){
+    ey[i]<-t(x[i,])%*%w
+    wnum<-(y[i]-ey[i])
+    wden<-r+t(x[i,])%*%covv%*%x[i,]
+    w<-w+(wnum/wden)[1,1]*covv%*%x[i,]
+    covv<-solve(r*solve(covv)+(x[i,]%*%t(x[i,])))
+  }
+  return(ey)
+}
+```
+
+We now find the optimum parameters using a training set (this time of the first 10,000 data entries) and then run the algorithms with these parameters and perform the corresponding analysis. We do this for all algorithms.
+
+```{r}
+cumsqloss(y[500:10000],LASER(x,y,1,100)[500:10000],0)
+cumsqloss(y[500:10000],LASER(x,y,1,200)[500:10000],0)
+cumsqloss(y[500:10000],LASER(x,y,1,300)[500:10000],0)
+cumsqloss(y[500:10000],LASER(x,y,1,400)[500:10000],0)
+cumsqloss(y[500:10000],LASER(x,y,1,500)[500:10000],0)
+cumsqloss(y[500:10000],LASER(x,y,1,600)[500:10000],0)
+cumsqloss(y[500:10000],LASER(x,y,1,700)[500:10000],0)
+cumsqloss(y[500:10000],LASER(x,y,1,800)[500:10000],0)
+cumsqloss(y[500:10000],LASER(x,y,1,900)[500:10000],0)
+cumsqloss(y[500:10000],LASER(x,y,1,1000)[500:10000],0)
+```
+
+```{r}
+b<-1
+c<-200
+b2<-(b*c)/(c-b)
+
+yhatLASER<-LASER(x,y,b,c)[10001:num]
+yhatAAR<-AAR(x,y,b2)[10001:num]
+
+ytest<-y[10001:num]
+
+cumsqloss(ytest,yhatLASER,0)/(num-10000)
+cumsqloss(ytest,yhatAAR,0)/(num-10000)
+
+plot((1:(num-10000)),(ytest-yhatAAR))
+plot((1:(num-10000)),(ytest-yhatLASER))
+
+cumAAR<-cumsqloss2(ytest,yhatAAR)
+cumLASER<-cumsqloss2(ytest,yhatLASER)
+plot((1:(num-10000)),cumAAR,type="l",col="red")
+lines((1:(num-10000)),cumLASER,col="green")
+```
+
+```{r}
+cumsqloss(y[500:10000],ARCOR(x,y,1,10000,0.95)[500:10000],0)
+cumsqloss(y[500:10000],ARCOR(x,y,2,10000,0.95)[500:10000],0)
+cumsqloss(y[500:10000],ARCOR(x,y,3,10000,0.95)[500:10000],0)
+cumsqloss(y[500:10000],ARCOR(x,y,4,10000,0.95)[500:10000],0)
+cumsqloss(y[500:10000],ARCOR(x,y,5,10000,0.95)[500:10000],0)
+cumsqloss(y[500:10000],ARCOR(x,y,6,10000,0.95)[500:10000],0)
+cumsqloss(y[500:10000],ARCOR(x,y,100,10000,0.95)[500:10000],0)
+```
+
+```{r}
+cumsqloss(y[500:10000],AROWR(x,y,1)[500:10000],0)
+cumsqloss(y[500:10000],AROWR(x,y,1000)[500:10000],0)
+cumsqloss(y[500:10000],AROWR(x,y,2000)[500:10000],0)
+cumsqloss(y[500:10000],AROWR(x,y,3000)[500:10000],0)
+cumsqloss(y[500:10000],AROWR(x,y,4000)[500:10000],0)
+cumsqloss(y[500:10000],AROWR(x,y,5000)[500:10000],0)
+cumsqloss(y[500:10000],AROWR(x,y,6000)[500:10000],0)
+cumsqloss(y[500:10000],AROWR(x,y,7000)[500:10000],0)
+cumsqloss(y[500:10000],AROWR(x,y,8000)[500:10000],0)
+cumsqloss(y[500:10000],AROWR(x,y,9000)[500:10000],0)
+cumsqloss(y[500:10000],AROWR(x,y,10000)[500:10000],0)
+```
+
+```{r}
+yhatARCOR<-ARCOR(x,y,1,100,0.95)[10001:num]
+yhatAROWR<-AROWR(x,y,4000)[10001:num]
+
+ytest<-y[10001:num]
+
+cumsqloss(ytest,yhatARCOR,0)/(num-10000)
+cumsqloss(ytest,yhatAROWR,0)/(num-10000)
+
+plot((1:(num-10000)),(ytest-yhatAROWR))
+plot((1:(num-10000)),(ytest-yhatARCOR))
+
+cumAROWR<-cumsqloss2(ytest,yhatAROWR)
+cumARCOR<-cumsqloss2(ytest,yhatARCOR)
+plot((1:(num-10000)),cumAROWR,type="l",col="red")
+lines((1:(num-10000)),cumARCOR,col="green")
+```
+```{r}
+cumsqloss(y[500:10000],CRRLS(x,y,0.9,1)[500:10000],0)
+cumsqloss(y[500:10000],CRRLS(x,y,0.9,2)[500:10000],0)
+cumsqloss(y[500:10000],CRRLS(x,y,0.9,3)[500:10000],0)
+cumsqloss(y[500:10000],CRRLS(x,y,0.9,4)[500:10000],0)
+cumsqloss(y[500:10000],CRRLS(x,y,0.9,5)[500:10000],0)
+cumsqloss(y[500:10000],CRRLS(x,y,0.9,10)[500:10000],0)
+cumsqloss(y[500:10000],CRRLS(x,y,0.9,15)[500:10000],0)
+cumsqloss(y[500:10000],CRRLS(x,y,0.9,20)[500:10000],0)
+cumsqloss(y[500:10000],CRRLS(x,y,0.9,25)[500:10000],0)
+cumsqloss(y[500:10000],CRRLS(x,y,0.9,30)[500:10000],0)
+cumsqloss(y[500:10000],CRRLS(x,y,0.9,35)[500:10000],0)
+cumsqloss(y[500:10000],CRRLS(x,y,0.9,40)[500:10000],0)
+cumsqloss(y[500:10000],CRRLS(x,y,0.9,45)[500:10000],0)
+cumsqloss(y[500:10000],CRRLS(x,y,0.9,50)[500:10000],0)
+cumsqloss(y[500:10000],CRRLS(x,y,0.9,10000)[500:10000],0)
+```
+
+```{r}
+yhatCRRLS<-CRRLS(x,y,0.9,2)[10001:num]
+yhatRLS<-RLS(x,y,0.9)[10001:num]
+
+ytest<-y[10001:num]
+
+cumsqloss(ytest,yhatCRRLS,0)/(num-10000)
+cumsqloss(ytest,yhatRLS,0)/(num-10000)
+
+plot((1:(num-10000)),(ytest-yhatRLS))
+plot((1:(num-10000)),(ytest-yhatCRRLS))
+
+cumRLS<-cumsqloss2(ytest,yhatRLS)
+cumCRRLS<-cumsqloss2(ytest,yhatCRRLS)
+plot((1:(num-10000)),cumRLS,type="l",col="red")
+lines((1:(num-10000)),cumCRRLS,col="green")
+```
+
+We now plot all cumulative squared errors on one glass for easy comparison
+
+```{r}
+plot((1:(num-10000)),cumRLS,type="l",col="red",main="Synthetic Data",ylab="Cumulative Squared-Error",xlab="Number of iterations")
+lines((1:(num-10000)),cumCRRLS,col="orange")
+lines((1:(num-10000)),cumARCOR,col="purple")
+lines((1:(num-10000)),cumAROWR,col="blue")
+lines((1:(num-10000)),cumAAR,col="darkgreen")
+lines((1:(num-10000)),cumLASER,col="green")
+lines((1:(num-10000)),cumkal,col="pink")
+legend(0, 1800000, legend=c("RLS", "CR-RLS","ARCOR", "AROWR","AAR", "LASER","CM + Kalman Filter"),
+       col=c("red", "orange","purple", "blue","darkgreen", "green","pink"), lty=1:2, cex=0.8)
+```
+
+
+
