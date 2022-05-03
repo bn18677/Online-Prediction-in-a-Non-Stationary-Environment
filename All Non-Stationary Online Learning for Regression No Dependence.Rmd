@@ -1,0 +1,403 @@
+---
+title: "all in one plus intercept"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library("MASS",character.only=TRUE)
+library("Rfast")
+library("stats")
+set.seed(10)
+```
+
+First we build all the needed algorithms.
+
+```{r}
+alphast<-function(u,alpha,lamda,Rb){
+  n<-length(alpha)
+  store<-numeric(n)
+  for (i in 1:n){
+    store[i]<-sum((u^2)/((1+alpha[i]*lamda)^2))
+  }
+  return(store)
+}
+
+proj<-function(wt,covv,Rb,dim){
+  decomp<-eigen(covv)
+  V<-decomp$vectors
+  Lamd<-decomp$values
+  u<-t(V)%*%wt
+  if (norm(wt,type="2")<=Rb){
+    return(wt)
+  }
+  else{
+    lamdmin<-min(Lamd)
+    a<-((norm(u,type="2"))/(Rb-1))/lamdmin
+    alpha<-seq(0,a,a/1000)
+    alpha<-alpha[binary_search(alphast(u,alpha,Lamd,Rb),0,TRUE)]
+    return(solve((diag(dim))+alpha*covv)%*%wt)
+  }
+  return(w)
+}
+```
+
+
+```{r}
+ARCOR<-function(x,y,r,Rb,ll){
+  dim<-length(x[1,])
+  num<-length(x[,1])
+  I<-diag(dim)
+  tcov<-ll*I
+  w<-t(matrix(0,1,dim))
+  covv<-diag(dim)
+  ey<-c()
+  for (i in 1:num){
+    denom<-r+t(x[i,])%*%covv%*%x[i,]
+    numer<-t(x[i,])%*%w
+    ey[i]<-numer
+    wnum<-(y[i]-numer)
+    wtilde<-w+(wnum/denom)[1,1]*covv%*%x[i,]
+    covvtilde<-solve(solve(covv)+(x[i,]%*%t(x[i,])))
+    if (min((as.vector(covv)-as.vector(tcov)))>=0){
+      covv<-covvtilde
+    }
+    else {
+      covv<-I
+      tcov<-(ll*(4/5))*I
+    }
+    w<-proj(wtilde,covv,Rb,dim)
+  }
+  return(ey)
+}
+
+AROWR<-function(x,y,r){
+  dim<-length(x[1,])
+  num<-length(x[,1])
+  w<-t(matrix(0,1,dim))
+  covv<-diag(dim)
+  ey<-c()
+  for (i in 1:num){
+    ey[i]<-t(x[i,])%*%w
+    wnum<-(y[i]-ey[i])
+    wden<-r+t(x[i,])%*%covv%*%x[i,]
+    w<-w+(wnum/wden)[1,1]*covv%*%x[i,]
+    covv<-solve(solve(covv)+(1/r)*(x[i,]%*%t(x[i,])))
+  }
+  return(ey)
+}
+```
+
+````{r}
+LASER<-function(x,y,b,c){
+  dim<-length(x[1,])
+  num<-length(x[,1])
+  w<-t(matrix(0,1,dim))
+  I<-diag(dim)
+  covv<-I*((c-b)/(b*c))
+  ey<-c()
+  for (i in 1:num){
+    denom<-1+t(x[i,])%*%(covv+((1/c)*I))%*%x[i,]
+    numer<-t(x[i,])%*%w
+    ey[i]<-numer/denom
+    wnum<-(y[i]-numer)
+    w<-w+(wnum/denom)[1,1]*(covv+((1/c)*I))%*%x[i,]
+    covv<-solve(solve((covv+((1/c)*I)))+(x[i,]%*%t(x[i,])))
+  }
+  return(ey)
+}
+
+AAR<-function(x,y,b){
+  dim<-length(x[1,])
+  num<-length(x[,1])
+  w<-t(matrix(0,1,dim))
+  covv<-diag(dim)*(1/b)
+  ey<-c()
+  for (i in 1:num){
+    denom<-1+t(x[i,])%*%covv%*%x[i,]
+    numer<-t(x[i,])%*%w
+    ey[i]<-numer/denom
+    wnum<-(y[i]-numer)
+    w<-w+(wnum/denom)[1,1]*covv%*%x[i,]
+    covv<-solve(solve(covv)+(x[i,]%*%t(x[i,])))
+  }
+  return(ey)
+}
+```
+
+```{r}
+CRRLS<-function(x,y,r,t0){
+  dim<-length(x[1,])
+  num<-length(x[,1])
+  w<-t(matrix(0,1,dim))
+  covv<-diag(dim)
+  ey<-c()
+  for (i in 1:num){
+    ey[i]<-t(x[i,])%*%w
+    wnum<-(y[i]-ey[i])
+    wden<-r+t(x[i,])%*%covv%*%x[i,]
+    w<-w+(wnum/wden)[1,1]*covv%*%x[i,]
+    covv<-solve(r*solve(covv)+(x[i,]%*%t(x[i,])))
+    if (i%%t0==0){
+      covv<-diag(dim)
+    }
+  }
+  return(ey)
+}
+
+RLS<-function(x,y,r){
+  dim<-length(x[1,])
+  num<-length(x[,1])
+  w<-t(matrix(0,1,dim))
+  covv<-diag(dim)
+  ey<-c()
+  for (i in 1:num){
+    ey[i]<-t(x[i,])%*%w
+    wnum<-(y[i]-ey[i])
+    wden<-r+t(x[i,])%*%covv%*%x[i,]
+    w<-w+(wnum/wden)[1,1]*covv%*%x[i,]
+    covv<-solve(r*solve(covv)+(x[i,]%*%t(x[i,])))
+  }
+  return(ey)
+}
+```
+
+```{r}
+cumsqloss<-function(y,yh,burn){
+  Tt<-length(y)
+  return(sum((y[(burn+1):Tt]-yh[(burn+1):Tt])^2))
+}
+
+cumsqloss2<-function(y,yh){
+  Tt<-length(y)
+  tot<-0
+  store<-numeric(Tt)
+  for (i in 1:Tt){
+    tot<-tot+(yh[i]-y[i])^2
+    store[i]<-tot
+  }
+  return(store)
+}
+```
+
+Now we load the real-world data.
+
+```{r}
+temps<-read.csv("temperature_history.csv")
+loads<-read.csv("Load_history.csv")
+```
+
+We now turn the real-world data into a useable matrix and add an intercept to the xmat which corresponds to the weights $\mathbf{x}_{t}$ that we will use to make our predictions.
+
+```{r}
+xmat<-cbind()
+for (i in 1:11){
+  cursubx<-t(data.matrix(subset(temps[temps$station_id==i,],select=-c(station_id,year,month,day))))
+  cursubx<-cursubx[1:(length(cursubx)-24)]
+  xmat<-cbind(xmat,c(cursubx))
+}
+numrow<-length(xmat[,1])
+xmat<-cbind((xmat/10),matrix(rep(1,numrow),ncol=1))
+tail(xmat)
+```
+
+```{r}
+ymat<-cbind()
+for (i in 1:20){
+  cursuby<-t(data.matrix(subset(loads[loads$zone_id==i,],select=-c(zone_id,year,month,day))))
+  cursuby<-cursuby[1:(length(cursuby)-(8*24))]
+  ymat<-cbind(ymat,c(cursuby))
+}
+ymat<-ymat/10000
+tail(ymat)
+```
+
+```{r}
+entnum<-length(ymat[,1])
+```
+
+We now ensure make the zone we are estimating the energy load for change every half a year.
+
+```{r}
+i<-1
+hy<-ceiling((365/2)*24)
+y<-numeric(length(ymat[,1]))
+zone<-100
+zone1<-zone
+while (zone==zone1){
+  zone<-sample(1:20,1)
+}
+zone1<-zone
+while (i<entnum) {
+  if ((i+hy-1)>entnum){
+    hy<-entnum-i+1
+  }
+  y[i:(i+hy-1)]<-(ymat[,zone])[i:(i+hy-1)]
+  i<-i+hy
+}
+length(y)
+length(y)-length(y[!is.na(y)])
+```
+
+We now ensure any empty elements of the matrix are removed 
+
+```{r}
+naelsy<-c()
+for (i in 1:length(y)){
+  if (is.na(y[i])==TRUE){
+    naelsy<-append(naelsy,i)
+  }
+}
+length(naelsy)
+```
+
+```{r}
+y<-y[!is.na(y)]
+x<-xmat[-c(naelsy),]
+num<-length(y)
+num
+```
+
+We now use the first 5000 points in the training data and test different parameters for LASER on this training data to help us guess what the optimum parameters will be by seing which has the smallest cumulative error.
+
+```{r}
+cumsqloss(y[500:2000],LASER(x,y,1,10)[500:2000],0)
+cumsqloss(y[500:2000],LASER(x,y,1,100)[500:2000],0)
+cumsqloss(y[500:2000],LASER(x,y,1,1000)[500:2000],0)
+cumsqloss(y[500:2000],LASER(x,y,1,10000)[500:2000],0)
+cumsqloss(y[500:2000],LASER(x,y,1,100000)[500:2000],0)
+cumsqloss(y[500:2000],LASER(x,y,1,600000)[500:2000],0)
+cumsqloss(y[500:2000],LASER(x,y,1,700000)[500:2000],0)
+cumsqloss(y[500:2000],LASER(x,y,1,800000)[500:2000],0)
+cumsqloss(y[500:2000],LASER(x,y,1,1000000)[500:2000],0)
+cumsqloss(y[500:2000],LASER(x,y,1,10000000)[500:2000],0)
+cumsqloss(y[500:2000],LASER(x,y,1,100000000)[500:2000],0)
+cumsqloss(y[500:2000],LASER(x,y,1,1000000000)[500:2000],0)
+cumsqloss(y[500:2000],LASER(x,y,1,10000000000)[500:2000],0)
+```
+
+We now run LASER and AAR on the full data set and analyse them accordingly.
+
+```{r}
+b<-1
+c<-700000
+b2<-(b*c)/(c-b)
+
+yhatLASER<-LASER(x,y,b,c)[2001:num]
+yhatAAR<-AAR(x,y,b2)[2001:num]
+
+ytest<-y[2001:num]
+
+cumsqloss(ytest,yhatLASER,0)/(num-2000)
+cumsqloss(ytest,yhatAAR,0)/(num-2000)
+
+plot((1:(num-2000)),(ytest-yhatAAR))
+plot((1:(num-2000)),(ytest-yhatLASER))
+
+cumAAR<-cumsqloss2(ytest,yhatAAR)
+cumLASER<-cumsqloss2(ytest,yhatLASER)
+
+plot((1:(num-2000)),cumAAR,type="l",col="red",)
+lines((1:(num-2000)),cumLASER,col="green")
+```
+
+We now use the first 5000 points in the training data and test different parameters for ARCOR and AROWR on this training data to help us guess what the optimum parameters will be by seing which has the smallest cumulative error.
+
+```{r}
+cumsqloss(y[500:2000],ARCOR(x,y,0.000000001,10000,0.95)[500:2000],0)
+cumsqloss(y[500:2000],ARCOR(x,y,0.000001,10000,0.95)[500:2000],0)
+cumsqloss(y[500:2000],ARCOR(x,y,0.001,10000,0.95)[500:2000],0)
+cumsqloss(y[500:2000],ARCOR(x,y,0.003,10000,0.95)[500:2000],0)
+cumsqloss(y[500:2000],ARCOR(x,y,0.004,10000,0.95)[500:2000],0)
+cumsqloss(y[500:2000],ARCOR(x,y,0.005,10000,0.95)[500:2000],0)
+cumsqloss(y[500:2000],ARCOR(x,y,100,10000,0.95)[500:2000],0)
+```
+
+```{r}
+cumsqloss(y[500:2000],AROWR(x,y,0.5)[500:2000],0)
+cumsqloss(y[500:2000],AROWR(x,y,2.4)[500:2000],0)
+cumsqloss(y[500:2000],AROWR(x,y,2.5)[500:2000],0)
+cumsqloss(y[500:2000],AROWR(x,y,2.6)[500:2000],0)
+cumsqloss(y[500:2000],AROWR(x,y,2.7)[500:2000],0)
+cumsqloss(y[500:2000],AROWR(x,y,2.8)[500:2000],0)
+cumsqloss(y[500:2000],AROWR(x,y,2.9)[500:2000],0)
+cumsqloss(y[500:2000],AROWR(x,y,100)[500:2000],0)
+```
+
+We now run ARCOR and AROWR on the full data set and analyse them accordingly.
+
+```{r}
+yhatARCOR<-ARCOR(x,y,0.000001,10000,0.95)[2001:num]
+yhatAROWR<-AROWR(x,y,2.6)[2001:num]
+
+ytest<-y[2001:num]
+
+cumsqloss(ytest,yhatARCOR,0)/(num-2000)
+cumsqloss(ytest,yhatAROWR,0)/(num-2000)
+
+plot((1:(num-2000)),(ytest-yhatAROWR))
+plot((1:(num-2000)),(ytest-yhatARCOR))
+
+cumAROWR<-cumsqloss2(ytest,yhatAROWR)
+cumARCOR<-cumsqloss2(ytest,yhatARCOR)
+plot((1:(num-2000)),cumAROWR,type="l",col="red")
+lines((1:(num-2000)),cumARCOR,col="green")
+```
+
+We now use the first 5000 points in the training data and test different parameters for CR-RLS on this training data to help us guess what the optimum parameters will be by seing which has the smallest cumulative error.
+
+```{r}
+cumsqloss(y,CRRLS(x,y,0.9,1),0)
+cumsqloss(y,CRRLS(x,y,0.9,5),0)
+cumsqloss(y,CRRLS(x,y,0.9,10),0)
+cumsqloss(y,CRRLS(x,y,0.9,15),0)
+cumsqloss(y,CRRLS(x,y,0.9,20),0)
+cumsqloss(y,CRRLS(x,y,0.9,25),0)
+cumsqloss(y,CRRLS(x,y,0.9,30),0)
+cumsqloss(y,CRRLS(x,y,0.9,35),0)
+cumsqloss(y,CRRLS(x,y,0.9,40),0)
+cumsqloss(y,CRRLS(x,y,0.9,45),0)
+cumsqloss(y,CRRLS(x,y,0.9,50),0)
+cumsqloss(y,CRRLS(x,y,0.9,60),0)
+cumsqloss(y,CRRLS(x,y,0.9,70),0)
+cumsqloss(y,CRRLS(x,y,0.9,80),0)
+cumsqloss(y,CRRLS(x,y,0.9,90),0)
+cumsqloss(y,CRRLS(x,y,0.9,100),0)
+cumsqloss(y,CRRLS(x,y,0.9,150),0)
+cumsqloss(y,CRRLS(x,y,0.9,200),0)
+cumsqloss(y,CRRLS(x,y,0.9,300),0)
+cumsqloss(y,CRRLS(x,y,0.9,400),0)
+cumsqloss(y,CRRLS(x,y,0.9,500),0)
+cumsqloss(y,CRRLS(x,y,0.9,1000),0)
+cumsqloss(y,CRRLS(x,y,0.9,2000),0)
+cumsqloss(y,CRRLS(x,y,0.9,3000),0)
+cumsqloss(y,CRRLS(x,y,0.9,4000),0)
+cumsqloss(y,CRRLS(x,y,0.9,5000),0)
+cumsqloss(y,CRRLS(x,y,0.9,6000),0)
+cumsqloss(y,CRRLS(x,y,0.9,7000),0)
+cumsqloss(y,CRRLS(x,y,0.9,100000000),0)
+```
+
+We now run CR-RLS and RLS on the full data set and analyse them accordingly.
+
+```{r}
+yhatCRRLS<-CRRLS(x,y,0.9,1)[2001:num]
+yhatRLS<-RLS(x,y,0.9)[2001:num]
+
+ytest<-y[2001:num]
+
+cumsqloss(ytest,yhatCRRLS,0)/(num-2000)
+cumsqloss(ytest,yhatRLS,0)/(num-2000)
+
+plot((1:(num-2000)),(ytest-yhatRLS))
+plot((1:(num-2000)),(ytest-yhatCRRLS))
+
+cumRLS<-cumsqloss2(ytest,yhatRLS)
+cumCRRLS<-cumsqloss2(ytest,yhatCRRLS)
+
+plot((1:(num-2000)),cumRLS,type="l",col="red")
+lines((1:(num-2000)),cumCRRLS,col="green")
+```
